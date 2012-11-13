@@ -65,9 +65,15 @@ else
 pinentry_w32 =
 endif
 
+if BUILD_PINENTRY_ANDROID
+pinentry_android = android
+else
+pinentry_android =
+endif
+
 SUBDIRS = assuan secmem pinentry ${pinentry_curses} \
 	${pinentry_gtk} ${pinentry_gtk_2} ${pinentry_qt} ${pinentry_qt4} \
-	${pinentry_w32} doc
+	${pinentry_w32} ${pinentry_android} doc
 
 
 install-exec-local:

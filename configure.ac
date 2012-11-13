@@ -32,8 +32,7 @@ m4_define(mym4_version, [0.8.3])
 # the decimalized short revision number, a beta version string and a
 # flag indicating a development version (mym4_isgit).  Note that the
 # m4 processing is done by autoconf and not during the configure run.
-m4_define([mym4_revision], m4_esyscmd([git branch -v 2>/dev/null \
-          | awk '/^\* / {printf "%s",$3}']))
+m4_define([mym4_revision], m4_esyscmd([git rev-parse --short HEAD 2>/dev/null | tr -d '\n']))
 m4_define([mym4_revision_dec],
           m4_esyscmd_s([echo $((0x$(echo ]mym4_revision[|head -c 4)))]))
 m4_define([mym4_betastring],
@@ -461,6 +460,23 @@ pinentry_w32=no
 test $have_w32_system = yes && pinentry_w32=yes
 AM_CONDITIONAL(BUILD_PINENTRY_W32, test "$pinentry_w32" = "yes")
 
+dnl
+dnl Check for android pinentry program.
+dnl
+AC_ARG_ENABLE(pinentry-android,
+            AC_HELP_STRING([--enable-pinentry-android], [build android pinentry]),
+            pinentry_android=$enableval, pinentry_android=no)
+
+AM_CONDITIONAL(BUILD_LIBPINENTRY_CURSES,
+              test "$pinentry_curses" = "yes" -o "$fallback_curses" = "yes")
+AM_CONDITIONAL(BUILD_PINENTRY_ANDROID, test "$pinentry_android" = "yes")
+
+if test "$pinentry_android" = "yes"; then
+  AC_DEFINE(PINENTRY_ANDROID, 1,
+           [The Android version of Pinentry is to be build])
+fi
+
+
 
 # Figure out the default pinentry.  We are very conservative here.
 # Please change the order only after verifying that the preferred
@@ -484,7 +500,11 @@ else
           if test "$pinentry_w32" = "yes"; then
             PINENTRY_DEFAULT=pinentry-w32
           else
-            AC_MSG_ERROR([[No pinentry enabled.]])
+            if test "$pinentry_android" = "yes"; then
+              PINENTRY_DEFAULT=pinentry-android
+            else
+              AC_MSG_ERROR([[No pinentry enabled.]])
+            fi
           fi
         fi
       fi
@@ -504,6 +524,7 @@ gtk+-2/Makefile
 qt/Makefile
 qt4/Makefile
 w32/Makefile
+android/Makefile
 doc/Makefile
 Makefile
 ])
@@ -521,7 +542,8 @@ AC_MSG_NOTICE([
 	GTK+-2 Pinentry: $pinentry_gtk_2
 	Qt Pinentry: $pinentry_qt
 	Qt4 Pinentry: $pinentry_qt4
-        W32 Pinentry: $pinentry_w32
+	W32 Pinentry: $pinentry_w32
+	Android Pinentry: $pinentry_android
 
 	Fallback to Curses: $fallback_curses
 
