@@ -70,11 +70,11 @@ android_cmd_handler (pinentry_t pe)
 pinentry_cmd_handler_t pinentry_cmd_handler = android_cmd_handler;
 
 int send_intent() {
- 
+
   char command[PATH_MAX];
 
-  sprintf(command, "/system/bin/am start -n info.guardianproject.gpg.pinentry/info.guardianproject.gpg.pinentry.PINEntry > /dev/null"); 
-  
+  sprintf(command, "/system/bin/am start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PINEntry > /dev/null");
+
       static const char* const unsec_vars[] = {
         "GCONV_PATH",
         "GETCONF_DIR",
