@@ -36,35 +36,26 @@
 #include <string.h>
 #include <sys/un.h>
 
+#ifdef PINENTRY_ANDROID
+    #include <android/log.h>
+#endif
+
 
 #include "pinentry.h"
 #include "pinentry-curses.h"
 
 #define SOCKET_NAME "info.guardianproject.gpg.pinentry"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PINENTRY", __VA_ARGS__)
 
 int
 android_cmd_handler (pinentry_t pe)
 {
-  /*if (pe->pin)
-  {
-    if (pe->error)
-	pinentry.setError (from_utf8 (pe->error));
-      if (pe->quality_bar)
-	pinentry.setQualityBar (from_utf8 (pe->quality_bar));
-      if (pe->quality_bar_tt)
-	pinentry.setQualityBarTT (from_utf8 (pe->quality_bar_tt));
-      int len = strlen (pin);
-      if (len >= 0)
-	{
-	  pinentry_setbufferlen (pe, len + 1);
-	  if (pe->pin)
-	    {
-	      strcpy (pe->pin, pin);
-	      return len;
-	    }
-	}
-  }*/
-  return 0;
+    LOGD("android_cmd_handler: sup?\n");
+    if (pe->pin)
+    {
+        LOGD("android_cmd_handler: i think they want a pin..\n");
+    }
+    return 0;
 }
 
 pinentry_cmd_handler_t pinentry_cmd_handler = android_cmd_handler;
@@ -119,7 +110,7 @@ int send_intent() {
 
 int main (int argc, char *argv[])
 {
-  printf("Welcome to pinentry-android\n");
+  LOGD("Welcome to pinentry-android\n");
   pid_t child_pid;
   int child_status;
   pinentry_init ("pinentry-android");
@@ -133,7 +124,7 @@ int main (int argc, char *argv[])
 
   /* 1. launch pinentry activity */
   send_intent();
-  sleep(1); // TODO find better way to detect if activity is launched
+  //sleep(1); // TODO find better way to detect if activity is launched
 
   /* 2. connect to activity's socket */
   struct sockaddr_un addr;
@@ -154,32 +145,32 @@ int main (int argc, char *argv[])
    */
   int len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(&addr.sun_path[1]);
 
-  printf("connecting to Java socket server...\n");
+  LOGD("connecting to Java socket server...\n");
   if (connect(fd, (struct sockaddr*)&addr, len) < 0) {
     perror("connect error");
     exit(-1);
   }
 
-  printf("connection succeeded\n");
+  LOGD("connection succeeded\n");
   close(fd);
 
   /* 3. communicate with gpg-agent */
 
-  child_pid = fork();
-  if( child_pid < 0 ) {
+//   child_pid = fork();
+//   if( child_pid < 0 ) {
     /* unsuccessful fork */
-    perror("fork:");
-    exit(-1);
-  }
-  if( child_pid == 0 ) { /* child process */
-    /* TODO: we actually don't want to pass the socket here..*/
-    if (pinentry_loop2 (fd, fd))
+//     perror("fork:");
+//     exit(-1);
+//   }
+//   if( child_pid == 0 ) { /* child process */
+//       printf("sup sawgs, child proc here\n");
+    if (pinentry_loop ())
       exit(1);
     exit(0);
-  } else { /* parent process */
-    wait(&child_status);
-    exit(0);
-  }
+//   } else { /* parent process */
+//     wait(&child_status);
+//     exit(0);
+//   }
 
-  return 0;
+//   return 0;
 }
