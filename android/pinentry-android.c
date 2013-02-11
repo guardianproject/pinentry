@@ -143,9 +143,12 @@ int send_intent() {
 
   char command[PATH_MAX];
 
-  sprintf(command, "/system/bin/am start -n info.guardianproject.gpg/info.guardianproject.gpg.PinEntryActivity");
+  sprintf(command, "/system/bin/am start --user %s, -n info.guardianproject.gpg/info.guardianproject.gpg.PinEntryActivity", getenv("PINENTRY_USER_DATA"));
 
       static const char* const unsec_vars[] = {
+         "PATH",
+        "PINENTRY_USER_DATA",
+        "BOOTCLASSPATH",
         "GCONV_PATH",
         "GETCONF_DIR",
         "HOSTALIASES",
@@ -177,13 +180,15 @@ int send_intent() {
     const char* const* cp = unsec_vars;
     const char* const* endp = cp + sizeof(unsec_vars)/sizeof(unsec_vars[0]);
     while (cp < endp) {
-        unsetenv(*cp);
+//         unsetenv(*cp);
+    LOGD("%s=%s", *cp, getenv(*cp));
         cp++;
     }
     // sane value so "am" works
     setenv("LD_LIBRARY_PATH", "/vendor/lib:/system/lib", 1);
-    setegid(getgid());
-    seteuid(getuid());
+//     setenv("BOOTCLASSPATH", "/system/framework/core.jar:/system/framework/core-junit.jar:/system/framework/bouncycastle.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/mms-common.jar:/system/framework/android.policy.jar:/system/framework/services.jar:/system/framework/apache-xml.jar", 1);
+//     setegid(getgid());
+//     seteuid(getuid());
     return system(command);
 }
 
