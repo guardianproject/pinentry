@@ -40,7 +40,9 @@
 #include "pinentry.h"
 #include "pinentry-curses.h"
 
-#define SOCKET_NAME "info.guardianproject.gpg.pinentry"
+#define SOCKET_HELPER "info.guardianproject.gpg.pinentryhelper"
+#define SOCKET_PINENTRY "info.guardianproject.gpg.pinentry"
+
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PE-HELPER", __VA_ARGS__)
 #define MSG_CMSG_CLOEXEC NULL
 
@@ -192,12 +194,8 @@ int send_intent() {
     return system(command);
 }
 
-int exec_dialog() {
-    /* 1. launch pinentry activity */
-  send_intent();
-  //sleep(1); // TODO find better way to detect if activity is launched
+int start_server() {
 
-  /* 2. connect to activity's socket */
   struct sockaddr_un addr;
   int fd;
 
@@ -209,7 +207,7 @@ int exec_dialog() {
   memset(&addr, 0, sizeof(addr));
   addr.sun_family = AF_UNIX;
   addr.sun_path[0] = '\0';
-  strncpy( &addr.sun_path[1], SOCKET_NAME, sizeof(addr.sun_path)-1 );
+  strncpy( &addr.sun_path[1], SOCKET_PINENTRY, sizeof(addr.sun_path)-1 );
   /* calculate the length of our addrlen, for some reason this isn't simply
    * sizeof(addr), TODO: learn why, i suspect it has something to do with sun_path
    * being a char[108]
@@ -231,42 +229,68 @@ int exec_dialog() {
       perror("accept error");
       exit(1);
     }
+    LOGD("client connected\n");
+    return fd;
+}
 
-//   if (connect(fd, (struct sockaddr*)&addr, len) < 0) {
-//     perror("connect error");
-//     exit(-1);
-//   }
+int notify_helper() {
 
-  LOGD("connection established\n");
+    struct sockaddr_un addr;
+  int fd, rc;
+
+  if ( (fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+    perror("socket error");
+    exit(-1);
+  }
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sun_family = AF_UNIX;
+  addr.sun_path[0] = '\0';
+  strncpy( &addr.sun_path[1], SOCKET_HELPER, sizeof(addr.sun_path)-1 );
+  /* calculate the length of our addrlen, for some reason this isn't simply
+   * sizeof(addr), TODO: learn why, i suspect it has something to do with sun_path
+   * being a char[108]
+   */
+    int len = offsetof(struct sockaddr_un, sun_path) + 1 + strlen(&addr.sun_path[1]);
+    LOGD("connecting to Java socket server...\n");
+    if (connect(fd, (struct sockaddr*)&addr, len) < 0) {
+        perror("connect error");
+        exit(EXIT_FAILURE);
+    }
+
+    LOGD("connected, launching activity\n");
+
+    char cmd[] = "START\n";
+    write(fd, cmd, strlen(cmd));
+    LOGD("sent start command, waiting response\n");
+    char buf[1];
+    rc = read(fd, buf, 1);
+    if( rc != 1 ) {
+        LOGD("reading response from server failed\n");
+        perror("server resp:");
+        exit(EXIT_FAILURE);
+    }
+    if( buf[1] == -1) {
+        LOGD("launching activity failed\n");
+        exit(EXIT_FAILURE);
+    }
+  LOGD("pinentry activity launched\n");
   return fd;
 }
 
-int
-android_cmd_handler (pinentry_t pe)
-{
-    LOGD("android_cmd_handler: sup?\n");
-    int want_pass = pe->pin;
-    if (want_pass)
-    {
-        LOGD("android_cmd_handler: i think they want a pin..\n");
-        
-        const char *pin = "1234";
-        int len = strlen (pin);
-        pinentry_setbufferlen (pe, len + 1);
-        strcpy (pe->pin, pin);
-        return len;
-    }
-    return 0;
+int exec_dialog() {
+
+    int helper_fd = notify_helper();
+
+    int pinentry_fd = start_server();
+  return pinentry_fd;
 }
-
-pinentry_cmd_handler_t pinentry_cmd_handler = android_cmd_handler;
-
 
 int main (int argc, char *argv[])
 {
   LOGD("Welcome to pinentry-android\n");
   int fd, rc;
-  
+
   fd = exec_dialog();
   if ( fd == -1 ) {
       LOGD("Java fd is -1, bailing\n");
@@ -282,13 +306,13 @@ int main (int argc, char *argv[])
         LOGD("sending STDOUT failed\n");
         exit(-1);
     }
-
     LOGD("successfully sent my fds to javaland\n");
     char buf[1];
     int r = read(fd, buf, 1);
+    LOGD("finishing\n");
     if( r == 1 )
-        return r;
-    return -1; // UNKNOWN WTF
+        return buf[0];
+    return EXIT_FAILURE; // UNKNOWN WTF
   /*pinentry_init ("pinentry-android");
 
   /* Consumes all arguments.  *
