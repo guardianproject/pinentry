@@ -147,9 +147,11 @@ int recv_fd ( int sockfd ) {
 int start_server ( void ) {
 
     struct sockaddr_un addr;
-    int fd, addr_len;
+    int server_fd, client_fd, addr_len;
+    struct pollfd fds[1];
+    int TIMEOUT = 5000;
 
-    if ( ( fd = socket ( AF_UNIX, SOCK_STREAM, 0 ) ) == -1 ) {
+    if ( ( server_fd = socket ( AF_UNIX, SOCK_STREAM, 0 ) ) == -1 ) {
         perror ( "socket error" );
         exit ( -1 );
     }
@@ -160,26 +162,33 @@ int start_server ( void ) {
     strncpy ( &addr.sun_path[1], SOCKET_PINENTRY, sizeof ( addr.sun_path )-1 );
 
     addr_len= offsetof ( struct sockaddr_un, sun_path ) + 1 + strlen ( &addr.sun_path[1] );
-    if ( bind ( fd, ( struct sockaddr* ) &addr, addr_len ) == -1 ) {
+    if ( bind ( server_fd, ( struct sockaddr* ) &addr, addr_len ) == -1 ) {
         perror ( "bind error" );
         exit ( -1 );
     }
 
-    if ( listen ( fd, 5 ) == -1 ) {
+    if ( listen ( server_fd, 5 ) == -1 ) {
         perror ( "listen error" );
         exit ( -1 );
     }
 
     LOGD ( "waiting for connection\n" );
 
-    if ( ( fd = accept ( fd, NULL, NULL ) ) == -1 ) {
-        perror ( "accept error" );
-        exit ( 1 );
+    fds[0].fd = server_fd;
+    fds[0].events = POLLIN;
+
+    if( poll(fds, 2, TIMEOUT) > 0 ) {
+        if ( ( client_fd = accept ( server_fd, NULL, NULL ) ) == -1 ) {
+            perror ( "accept error" );
+            exit ( 1 );
+        }
+        LOGD ( "client connected\n" );
+    } else {
+        LOGD("accept timeout reached\n");
+        client_fd = -1;
     }
 
-    LOGD ( "client connected\n" );
-
-    return fd;
+    return client_fd;
 }
 
 int notify_helper ( void ) {
@@ -257,7 +266,7 @@ int main ( int argc, char *argv[] ) {
     pe_fd = start_server();
 
     if ( pe_fd == -1 ) {
-        LOGD ( "Java fd is -1, bailing\n" );
+        LOGD ( "java fd is -1, bailing\n" );
         exit ( -1 );
     }
 
@@ -325,7 +334,7 @@ int main ( int argc, char *argv[] ) {
             r = read ( pe_fd, buf, 1 );
             if( r == 1 ) {
                 r = buf[0];
-                LOGD ( "exit received\n" );
+                LOGD ( "exit received r=\n",r );
             } else if( r == 0 ) {
                 //EOF
                 LOGD("pinentry EOF\n");
