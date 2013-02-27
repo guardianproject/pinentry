@@ -207,7 +207,7 @@ int notify_helper ( void ) {
 
     LOGD ( "connected, launching activity\n" );
 
-    if ( write ( fd, cmd, strlen ( cmd ) == -1 ) ) {
+    if ( write ( fd, cmd, strlen ( cmd ) ) != strlen(cmd) ) {
         perror ( "sending start failed:" );
     }
 
