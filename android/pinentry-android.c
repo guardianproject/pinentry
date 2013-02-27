@@ -36,6 +36,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/un.h>
+#include <poll.h>
 
 #include <android/log.h>
 
@@ -229,9 +230,14 @@ int notify_helper ( void ) {
 }
 
 int main ( int argc, char *argv[] ) {
-    int fd, rc;
+    int pe_fd, control_fd, rc;
     char buf[1];
-    int r;
+    int r, stop = 0;
+    int TIMEOUT = 2000;
+    int timeout_cnt, max_timeouts = 10;
+    struct pollfd fds[2];
+
+    char CMD_PING[] = "PING\n";
 
     /* Consumes all arguments.  */
     if ( pinentry_parse_opts ( argc, argv ) ) {
@@ -244,24 +250,24 @@ int main ( int argc, char *argv[] ) {
     /* First we communicate with Java
      * to launch the GUI and start pinentry listener
      */
-    notify_helper();
+    control_fd = notify_helper();
 
     /* Then we launch our own listener to handle
      * the stdin stdout handoff*/
-    fd = start_server();
+    pe_fd = start_server();
 
-    if ( fd == -1 ) {
+    if ( pe_fd == -1 ) {
         LOGD ( "Java fd is -1, bailing\n" );
         exit ( -1 );
     }
 
-    rc = send_fd ( fd, STDIN_FILENO );
+    rc = send_fd ( pe_fd, STDIN_FILENO );
     if ( rc == -1 ) {
         LOGD ( "sending STDIN failed\n" );
         exit ( -1 );
     }
 
-    rc = send_fd ( fd, STDOUT_FILENO );
+    rc = send_fd ( pe_fd, STDOUT_FILENO );
     if ( rc == -1 ) {
         LOGD ( "sending STDOUT failed\n" );
         exit ( -1 );
@@ -269,11 +275,70 @@ int main ( int argc, char *argv[] ) {
 
     LOGD ( "successfully sent my fds to javaland\n" );
 
-    r = read ( fd, buf, 1 );
+
+    fds[0].fd = control_fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = pe_fd;
+    fds[1].events = POLLIN;
+    timeout_cnt = 0;
+
+    while(!stop) {
+        LOGD ( "polling\n" );
+        rc = poll(fds, 2, TIMEOUT);
+        LOGD("\tpoll result %d\n",rc);
+        if( rc == -1 ) {
+            perror("poll:");
+        } else if ( rc == 0 ) {
+            LOGD("timedout.. pinging\n");
+            timeout_cnt++;
+            r = write(control_fd, CMD_PING, strlen(CMD_PING));
+            if( r == -1 ) {
+                LOGD ( "ping failed\n" );
+                perror("write ping:");
+            } else if (r != strlen(CMD_PING) ) {
+                LOGD ( "ping failed, incomplete\n" );
+            }
+
+        } else if( fds[0].revents & POLLIN ) {
+            LOGD("input from control\n");
+            r = read ( control_fd, buf, 1 );
+            if ( r == 1 ) {
+                r = buf[0];
+                switch (r) {
+                    case 1: // EXIT
+                        stop = 1;
+                        LOGD ( "exit received\n" );
+                    case 2: // PONG
+                        LOGD("Pong received\n");
+                    default:
+                        LOGD("unknown response %d\n", r);
+                }
+            } else if ( r == 0 ) {
+                //EOF
+                LOGD("control EOF\n");
+                stop = 1;
+            }  else  {
+                perror("control read error:");
+            }
+        } else if( fds[1].revents & POLLIN ) {
+            LOGD("input from pinentry\n");
+            r = read ( pe_fd, buf, 1 );
+            if( r == 1 ) {
+                r = buf[0];
+                LOGD ( "exit received\n" );
+            } else if( r == 0 ) {
+                //EOF
+                LOGD("pinentry EOF\n");
+            } else {
+                LOGD("read from pinentry error r=%d\n", r);
+                r = -1;
+            }
+            stop = 1;
+        } else {
+            LOGD("unknown state\n");
+        }
+    }
 
     LOGD ( "finishing\n" );
-
-    if ( r == 1 )
-        return buf[0];
-    return EXIT_FAILURE;
+    return r;
 }
