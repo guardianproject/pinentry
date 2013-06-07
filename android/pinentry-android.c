@@ -1,4 +1,4 @@
-/* pinentry-curses.c - A secure curses dialog for PIN entry.
+/* pinentry-curses.c - A pinentry wrapper for Android
    Copyright (C) 2013 Abel Luck <abel@guardianproject.info>
    Copyright (C) 2006-2012, C. Thomas Stover <cts at thomasstover.com>
    Copyright (C) 2002 g10 Code GmbH
