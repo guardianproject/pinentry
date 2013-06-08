@@ -27,26 +27,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdarg.h>
 
 #include <errno.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/un.h>
 #include <poll.h>
+#include <paths.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <android/log.h>
 
 #include "pinentry.h"
 #include "pinentry-curses.h"
 
+#define ACTION_PINENTRY "start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
+
 #define SOCKET_HELPER "info.guardianproject.gpg.pinentryhelper"
 #define SOCKET_PINENTRY "info.guardianproject.gpg.pinentry"
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PE-HELPER", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR , "PE-HELPER", __VA_ARGS__)
 
 /* dummy cmd_handler to prevent linking errors */
 static int
@@ -191,6 +196,11 @@ int start_server ( void ) {
     return client_fd;
 }
 
+#if 0
+// We used to connect to connect to java over a domain socket
+// to launch the pinentry activity, but now we use the am command
+// this method might need to be ressurected in the future
+
 int notify_helper ( void ) {
 
     struct sockaddr_un addr;
@@ -237,14 +247,126 @@ int notify_helper ( void ) {
 
     return fd;
 }
+#endif
+
+void sanitize_env() {
+    static const char* const unsec_vars[] = {
+        "GCONV_PATH",
+        "GETCONF_DIR",
+        "HOSTALIASES",
+        "LD_AUDIT",
+        "LD_DEBUG",
+        "LD_DEBUG_OUTPUT",
+        "LD_DYNAMIC_WEAK",
+        "LD_LIBRARY_PATH",
+        "LD_ORIGIN_PATH",
+        "LD_PRELOAD",
+        "LD_PROFILE",
+        "LD_SHOW_AUXV",
+        "LD_USE_LOAD_BIAS",
+        "LOCALDOMAIN",
+        "LOCPATH",
+        "MALLOC_TRACE",
+        "MALLOC_CHECK_",
+        "NIS_PATH",
+        "NLSPATH",
+        "RESOLV_HOST_CONF",
+        "RES_OPTIONS",
+        "TMPDIR",
+        "TZDIR",
+        "LD_AOUT_LIBRARY_PATH",
+        "LD_AOUT_PRELOAD",
+        "IFS",
+    };
+    const char* const* cp   = unsec_vars;
+    const char* const* endp = cp + sizeof(unsec_vars)/sizeof(unsec_vars[0]);
+    while (cp < endp) {
+        unsetenv(*cp);
+        cp++;
+    }
+    setenv("LD_LIBRARY_PATH", "/vendor/lib:/system/vendor/lib:/system/lib", 0);
+    setenv("BOOTCLASSPATH", "/system/framework/core.jar:/system/framework/core-junit.jar:/system/framework/bouncycastle.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/mms-common.jar:/system/framework/android.policy.jar:/system/framework/services.jar:/system/framework/apache-xml.jar", 1);
+}
+
+/*
+ * detect the user_id which is new in 4.2
+ * as part of the multiuser mode feature
+ * untested, but should work ;-)
+ * 
+ * -> someone want to send me a multiuser device?
+ * 
+ * Pre ICS, the android_user_id = 0
+ * Post ICS, the formula is as follows
+ *   M*100,000 + 10,000+N = linux_uid
+ * where,
+ *   N = app id, offset from 10,000
+ *   M = android user id (human users), starting at 0
+ * 
+ * using integer division:
+ *     android_user_id = linux_uid / 100000
+ *              app_id = linux_uid % 100000
+ *                 linux_uid = android_user_id * 100000 + (app_id % 100000)
+ */ 
+unsigned int get_android_user_id() {
+    unsigned int uid = getuid();
+    unsigned int android_user_id = 0;
+    if( uid > 99999 ) {
+        android_user_id = uid / 100000;
+    }
+    return android_user_id;
+}
+
+/*
+ * Exec the provided command in a new process
+ * and send all output to /dev/null
+ */
+int run_command(char* command) {
+    char *wrapper[] = { "sh", "-c", command, NULL, };
+
+    pid_t pid = fork();
+    if( pid < 0 ) {
+        return -1;
+    } else if( pid > 0 ) {
+        return 0;
+    }
+
+    LOGD ( "run_command:  %s", command );
+    // quiet mode
+    int devzero = open("/dev/zero", O_RDONLY | O_CLOEXEC);
+    int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    dup2(devzero, 0);
+    dup2(devnull, 1);
+    dup2(devnull, 2);
+
+    execv(_PATH_BSHELL, wrapper);
+    LOGE("run_command execv failed");
+    exit(EXIT_FAILURE);
+}
+
+/*
+ * Uses the 'am start' utility in android to send an ASYNC request
+ * to launch the PinentryActivity.
+ * The activity is not guaranteed to have been started.
+ */
+int launch_pinentry_gui() {
+    char command[ARG_MAX];
+    unsigned int android_user_id = get_android_user_id();
+
+    snprintf(command, sizeof(command), "exec /system/bin/am " ACTION_PINENTRY " --user %d", android_user_id);
+    LOGD ( "sending intent with: %s", command );
+    return run_command(command);
+}
 
 int main ( int argc, char *argv[] ) {
-    int pe_fd, control_fd, rc;
+
+    sanitize_env();
+
+    int pe_fd, rc;
     char buf[1];
     int r, stop = 0;
     int TIMEOUT = 2000;
     int timeout_cnt, max_timeouts = 10;
-    struct pollfd fds[2];
+    struct pollfd fds[1];
 
     char CMD_PING[] = "PING\n";
 
@@ -256,13 +378,18 @@ int main ( int argc, char *argv[] ) {
 
     LOGD ( "Welcome to pinentry-android\n" );
 
-    /* First we communicate with Java
-     * to launch the GUI and start pinentry listener
+    /*
+     * Launch the Android GUI component asyncronously
      */
-    control_fd = notify_helper();
+    if( launch_pinentry_gui() < 0 ) {
+        LOGE( "launching activity failed" );
+        exit ( EXIT_FAILURE );
+    }
 
-    /* Then we launch our own listener to handle
-     * the stdin stdout handoff*/
+    /*
+     * Then we launch our own listener to handle
+     * the stdin stdout handoff
+     */
     pe_fd = start_server();
 
     if ( pe_fd == -1 ) {
@@ -285,56 +412,25 @@ int main ( int argc, char *argv[] ) {
     LOGD ( "successfully sent my fds to javaland\n" );
 
 
-    fds[0].fd = control_fd;
+    fds[0].fd = pe_fd;
     fds[0].events = POLLIN;
-    fds[1].fd = pe_fd;
-    fds[1].events = POLLIN;
     timeout_cnt = 0;
 
     while(!stop) {
         LOGD ( "polling\n" );
-        rc = poll(fds, 2, TIMEOUT);
+        rc = poll(fds, 1, TIMEOUT);
         LOGD("\tpoll result %d\n",rc);
         if( rc == -1 ) {
             perror("poll:");
         } else if ( rc == 0 ) {
-            LOGD("timedout.. pinging\n");
+            LOGD("timed out..\n");
             timeout_cnt++;
-            r = write(control_fd, CMD_PING, strlen(CMD_PING));
-            if( r == -1 ) {
-                LOGD ( "ping failed\n" );
-                perror("write ping:");
-            } else if (r != strlen(CMD_PING) ) {
-                LOGD ( "ping failed, incomplete\n" );
-            }
-
         } else if( fds[0].revents & POLLIN ) {
-            LOGD("input from control\n");
-            r = read ( control_fd, buf, 1 );
-            if ( r == 1 ) {
-                r = buf[0];
-                switch (r) {
-                    case 1: // EXIT
-                        stop = 1;
-                        LOGD ( "exit received\n" );
-                    case 2: // PONG
-                        LOGD("Pong received\n");
-                    default:
-                        LOGD("unknown response %d\n", r);
-                }
-            } else if ( r == 0 ) {
-                //EOF
-                LOGD("control EOF\n");
-                stop = 1;
-            }  else  {
-                perror("control read error:");
-            }
-        } else if( fds[1].revents & POLLIN ) {
             LOGD("input from pinentry\n");
             r = read ( pe_fd, buf, 1 );
             if( r == 1 ) {
                 r = buf[0];
-                LOGD ( "exit received r=\n",r );
+                LOGD ( "exit received r=%d\n",r );
             } else if( r == 0 ) {
                 //EOF
                 LOGD("pinentry EOF\n");
