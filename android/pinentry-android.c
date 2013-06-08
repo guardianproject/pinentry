@@ -33,9 +33,11 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <paths.h>
+#include <pwd.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -44,6 +46,11 @@
 
 #include "pinentry.h"
 #include "pinentry-curses.h"
+
+#define GPG_APP_PATH "/data/data/info.guardianproject.gpg"
+
+#define INTERNAL_GNUPGHOME GPG_APP_PATH "/app_home"
+#define EXTERNAL_GNUPGHOME GPG_APP_PATH "/app_gnupghome"
 
 #define ACTION_PINENTRY "start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
 
@@ -149,53 +156,167 @@ int recv_fd ( int sockfd ) {
     return -1;
 }
 
-int start_server ( void ) {
+static int socket_create(char *path, size_t len) {
+    int fd;
+    struct sockaddr_un sun;
 
-    struct sockaddr_un addr;
-    int server_fd, client_fd, addr_len;
-    struct pollfd fds[1];
-    int TIMEOUT = 5000;
-
-    if ( ( server_fd = socket ( AF_UNIX, SOCK_STREAM, 0 ) ) == -1 ) {
-        perror ( "socket error" );
-        exit ( -1 );
+    fd = socket(AF_LOCAL, SOCK_STREAM, 0);
+    if (fd < 0) {
+        LOGE ( "socket_create: socket error" );
+        return -1;
+    }
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC)) {
+        LOGE(": fcntl FD_CLOEXEC");
+        goto err;
     }
 
-    memset ( &addr, 0, sizeof ( addr ) );
-    addr.sun_family = AF_UNIX;
-    addr.sun_path[0] = '\0';
-    strncpy ( &addr.sun_path[1], SOCKET_PINENTRY, sizeof ( addr.sun_path )-1 );
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_LOCAL;
+    snprintf(path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME);
+    memset(sun.sun_path, 0, sizeof(sun.sun_path));
+    snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
 
-    addr_len= offsetof ( struct sockaddr_un, sun_path ) + 1 + strlen ( &addr.sun_path[1] );
-    if ( bind ( server_fd, ( struct sockaddr* ) &addr, addr_len ) == -1 ) {
-        perror ( "bind error" );
-        exit ( -1 );
+    /*
+     * Delete the socket to protect from situations when
+     * something bad occured previously and the kernel reused pid from that process.
+     * Small probability, isn't it.
+     */
+    unlink(sun.sun_path);
+
+    if (bind(fd, (struct sockaddr*)&sun, sizeof(sun)) < 0) {
+        LOGE("bind error");
+        goto err;
     }
 
-    if ( listen ( server_fd, 5 ) == -1 ) {
-        perror ( "listen error" );
-        exit ( -1 );
+    if (listen(fd, 1) < 0) {
+        LOGE("listen error");
+        goto err;
     }
 
-    LOGD ( "waiting for connection\n" );
-
-    fds[0].fd = server_fd;
-    fds[0].events = POLLIN;
-
-    if( poll(fds, 2, TIMEOUT) > 0 ) {
-        if ( ( client_fd = accept ( server_fd, NULL, NULL ) ) == -1 ) {
-            perror ( "accept error" );
-            exit ( 1 );
-        }
-        LOGD ( "client connected\n" );
-    } else {
-        LOGD("accept timeout reached\n");
-        client_fd = -1;
-    }
-
-    return client_fd;
+    return fd;
+err:
+    close(fd);
+    return -1;
 }
 
+static int socket_accept( int sock ) {
+    struct timeval tv;
+    fd_set fds;
+    int fd, rc;
+
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
+    FD_ZERO( &fds );
+    FD_SET( sock, &fds );
+
+    do {
+        rc = select( sock + 1, &fds, NULL, NULL, &tv );
+    } while ( rc < 0 && errno == EINTR );
+    if ( rc < 1 ) {
+        LOGE( "select" );
+        return -1;
+    }
+
+    fd = accept( sock, NULL, NULL );
+    if ( fd < 0 ) {
+        LOGE( "accept" );
+        return -1;
+    }
+
+    return fd;
+}
+
+/*
+ * sends stdin and stdout over the socket
+ * in that order, returns 0 on success
+ */
+static int socket_send_sdtio( int fd ) {
+    if ( send_fd ( fd, STDIN_FILENO ) < 0  ) {
+        LOGE ( "sending STDIN failed\n" );
+        return -1;
+    }
+
+    if ( send_fd ( fd, STDOUT_FILENO ) < 0 ) {
+        LOGE ( "sending STDOUT failed\n" );
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Block until EOF or data is receied from the fd
+ * If data is received, one byte is read and returned
+ */
+static int socket_wait(int fd) {
+    struct pollfd fds[1];
+    char buf[1];
+    int rc = 0;
+
+    fds[0].fd = fd;
+    fds[0].events = POLLIN;
+
+    rc = poll(fds, 1, -1);
+    LOGD("socket_wait: poll returned");
+    if( rc == -1 ) {
+
+        LOGE("socket_wait: poll error");
+        return -1;
+    } else if( fds[0].revents & POLLIN ) {
+
+        LOGD("socket_wait: input from pinentry\n");
+        rc = read ( fd, buf, 1 );
+        if( rc == 1 ) {
+            rc = buf[0];
+            LOGD ( "socket_wait: exit rc=%d\n", rc );
+            return rc;
+        }
+        return -1; // EOF
+    }
+    LOGD("socket_wait: unknown state");
+    return -1;
+}
+
+static void socket_cleanup(const char* sock_path) {
+    if (sock_path[0]) {
+        if (unlink(sock_path))
+            LOGE("unlink failed for: %s", sock_path);
+    }
+}
+
+void start_internal_server ( void ) {
+    char sock_path[PATH_MAX];
+    int sock_serv, sock_client;
+    sock_serv = socket_create( sock_path, sizeof( sock_path ) );
+    LOGD( "start_internal_server: %s", sock_path );
+
+    if( sock_serv < 0 ) {
+        LOGE( "start_internal_server: sock_serv error" );
+        goto error;
+    }
+
+    sock_client = socket_accept( sock_serv );
+
+    if( sock_client < 0 ) {
+        LOGE( "start_internal_server: sock_client error" );
+        goto error;
+    }
+
+    if( socket_send_sdtio(sock_client) != 0 ) {
+        LOGE("sending stdio failed");
+        goto error;
+    }
+
+    // gpg-agent and the real pinentry are now communicating
+    // but our process must stay alive until they're finished
+    // so we can exit with the actual return code
+    int rc = socket_wait(sock_client);
+
+    socket_cleanup(sock_path);
+    exit( rc );
+error:
+    socket_cleanup(sock_path);
+    exit( EXIT_FAILURE );
+}
 #if 0
 // We used to connect to connect to java over a domain socket
 // to launch the pinentry activity, but now we use the am command
@@ -249,7 +370,7 @@ int notify_helper ( void ) {
 }
 #endif
 
-void sanitize_env() {
+void sanitize_env( void ) {
     static const char* const unsec_vars[] = {
         "GCONV_PATH",
         "GETCONF_DIR",
@@ -307,7 +428,7 @@ void sanitize_env() {
  *              app_id = linux_uid % 100000
  *                 linux_uid = android_user_id * 100000 + (app_id % 100000)
  */ 
-unsigned int get_android_user_id() {
+static unsigned int get_android_user_id( void ) {
     unsigned int uid = getuid();
     unsigned int android_user_id = 0;
     if( uid > 99999 ) {
@@ -320,7 +441,7 @@ unsigned int get_android_user_id() {
  * Exec the provided command in a new process
  * and send all output to /dev/null
  */
-int run_command(char* command) {
+static int run_command(char* command) {
     char *wrapper[] = { "sh", "-c", command, NULL, };
 
     pid_t pid = fork();
@@ -348,7 +469,7 @@ int run_command(char* command) {
  * to launch the PinentryActivity.
  * The activity is not guaranteed to have been started.
  */
-int launch_pinentry_gui() {
+static int launch_pinentry_gui( void ) {
     char command[ARG_MAX];
     unsigned int android_user_id = get_android_user_id();
 
@@ -360,15 +481,7 @@ int launch_pinentry_gui() {
 int main ( int argc, char *argv[] ) {
 
     sanitize_env();
-
-    int pe_fd, rc;
-    char buf[1];
-    int r, stop = 0;
-    int TIMEOUT = 2000;
-    int timeout_cnt, max_timeouts = 10;
-    struct pollfd fds[1];
-
-    char CMD_PING[] = "PING\n";
+    struct stat gpg_stat;
 
     /* Consumes all arguments.  */
     if ( pinentry_parse_opts ( argc, argv ) ) {
@@ -378,6 +491,12 @@ int main ( int argc, char *argv[] ) {
 
     LOGD ( "Welcome to pinentry-android\n" );
 
+    // is gnupg even installed?
+    if (stat(GPG_APP_PATH, &gpg_stat) < 0) {
+        LOGE("gpg not installed" GPG_APP_PATH);
+        exit ( EXIT_FAILURE );
+    }
+
     /*
      * Launch the Android GUI component asyncronously
      */
@@ -386,64 +505,21 @@ int main ( int argc, char *argv[] ) {
         exit ( EXIT_FAILURE );
     }
 
-    /*
-     * Then we launch our own listener to handle
-     * the stdin stdout handoff
-     */
-    pe_fd = start_server();
+    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid());
 
-    if ( pe_fd == -1 ) {
-        LOGD ( "java fd is -1, bailing\n" );
-        exit ( -1 );
+    if( gpg_stat.st_uid == getuid() ) {
+        // internal pinentry
+        // this pinentry process has been invoked
+        // by the gnupg-for-android app
+        LOGD( "internal pinentry" );
+        start_internal_server(); // never returns
+        exit ( EXIT_FAILURE );
+    } else {
+        // TODO external pinentry
+        // some other application wants to access pinentry
+        // NYI
+        LOGE( "NYI - external pinentry request from app %d", getuid() );
+        exit ( EXIT_FAILURE );
     }
-
-    rc = send_fd ( pe_fd, STDIN_FILENO );
-    if ( rc == -1 ) {
-        LOGD ( "sending STDIN failed\n" );
-        exit ( -1 );
-    }
-
-    rc = send_fd ( pe_fd, STDOUT_FILENO );
-    if ( rc == -1 ) {
-        LOGD ( "sending STDOUT failed\n" );
-        exit ( -1 );
-    }
-
-    LOGD ( "successfully sent my fds to javaland\n" );
-
-
-    fds[0].fd = pe_fd;
-    fds[0].events = POLLIN;
-    timeout_cnt = 0;
-
-    while(!stop) {
-        LOGD ( "polling\n" );
-        rc = poll(fds, 1, TIMEOUT);
-        LOGD("\tpoll result %d\n",rc);
-        if( rc == -1 ) {
-            perror("poll:");
-        } else if ( rc == 0 ) {
-            LOGD("timed out..\n");
-            timeout_cnt++;
-        } else if( fds[0].revents & POLLIN ) {
-            LOGD("input from pinentry\n");
-            r = read ( pe_fd, buf, 1 );
-            if( r == 1 ) {
-                r = buf[0];
-                LOGD ( "exit received r=%d\n",r );
-            } else if( r == 0 ) {
-                //EOF
-                LOGD("pinentry EOF\n");
-            } else {
-                LOGD("read from pinentry error r=%d\n", r);
-                r = -1;
-            }
-            stop = 1;
-        } else {
-            LOGD("unknown state\n");
-        }
-    }
-
-    LOGD ( "finishing\n" );
-    return r;
+    return -1;
 }
