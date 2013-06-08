@@ -469,11 +469,11 @@ static int run_command(char* command) {
  * to launch the PinentryActivity.
  * The activity is not guaranteed to have been started.
  */
-static int launch_pinentry_gui( void ) {
+static int launch_pinentry_gui( int uid ) {
     char command[ARG_MAX];
     unsigned int android_user_id = get_android_user_id();
 
-    snprintf(command, sizeof(command), "exec /system/bin/am " ACTION_PINENTRY " --user %d", android_user_id);
+    snprintf(command, sizeof(command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d --user %d", uid, android_user_id);
     LOGD ( "sending intent with: %s", command );
     return run_command(command);
 }
@@ -497,15 +497,15 @@ int main ( int argc, char *argv[] ) {
         exit ( EXIT_FAILURE );
     }
 
+    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid());
+
     /*
      * Launch the Android GUI component asyncronously
      */
-    if( launch_pinentry_gui() < 0 ) {
+    if( launch_pinentry_gui( getuid() ) < 0 ) {
         LOGE( "launching activity failed" );
         exit ( EXIT_FAILURE );
     }
-
-    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid());
 
     if( gpg_stat.st_uid == getuid() ) {
         // internal pinentry
