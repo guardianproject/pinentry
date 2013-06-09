@@ -54,7 +54,6 @@
 
 #define ACTION_PINENTRY "start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
 
-#define SOCKET_HELPER "info.guardianproject.gpg.pinentryhelper"
 #define SOCKET_PINENTRY "info.guardianproject.gpg.pinentry"
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PE-HELPER", __VA_ARGS__)
@@ -156,26 +155,24 @@ int recv_fd ( int sockfd ) {
     return -1;
 }
 
-static int socket_internal_path(char *path, size_t len) {
-    return snprintf(path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME);
-}
-
-static int socket_external_path(char *path, size_t len, char *dir_path, size_t dir_len) {
-    struct passwd *pw;
-    int app_uid = getuid();
-    pw = getpwuid(app_uid);
-    if( !pw ) {
-        LOGE("unknown user for uid %d", app_uid);
-        return -1;
-    }
-    snprintf( dir_path, sizeof( dir_len ), "%s/uid=%d(%s)", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
-    snprintf( path, sizeof( path ), "%s/uid=%d(%s)/S.pinentry", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
+static int socket_internal_path( char *path, size_t len ) {
+    snprintf( path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME );
     return 0;
 }
 
-static int socket_create(char *path, size_t len) {
+static int socket_external_path( char *path, size_t len ) {
+    snprintf( path, len, "%s.%d", SOCKET_PINENTRY, getuid() );
+    return 0;
+}
+
+static int socket_create( char *path, size_t len ) {
     int fd;
     struct sockaddr_un sun;
+
+    if( len > UNIX_PATH_MAX ) {
+        LOGE( "socket_create: path too long %d > %d", UNIX_PATH_MAX, len);
+        return -1;
+    }
 
     fd = socket(AF_LOCAL, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -187,10 +184,10 @@ static int socket_create(char *path, size_t len) {
         goto err;
     }
 
-    memset(&sun, 0, sizeof(sun));
+    memset( &sun, 0, sizeof( sun ) );
     sun.sun_family = AF_LOCAL;
-    memset(sun.sun_path, 0, sizeof(sun.sun_path));
-    snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
+    memset( sun.sun_path, 0, sizeof( sun.sun_path ) );
+    memcpy( sun.sun_path, path, len );
 
     /*
      * Delete the socket to protect from situations when
@@ -272,23 +269,22 @@ static int socket_wait(int fd) {
     fds[0].events = POLLIN;
 
     rc = poll(fds, 1, -1);
-    LOGD("socket_wait: poll returned");
     if( rc == -1 ) {
 
-        LOGE("socket_wait: poll error");
+        LOGE( "socket_wait: poll error" );
         return -1;
     } else if( fds[0].revents & POLLIN ) {
 
-        LOGD("socket_wait: input from pinentry\n");
+        LOGE( "socket_wait: input from pinentry\n" );
         rc = read ( fd, buf, 1 );
         if( rc == 1 ) {
             rc = buf[0];
-            LOGD ( "socket_wait: exit rc=%d\n", rc );
+            LOGE ( "socket_wait: exit rc=%d\n", rc );
             return rc;
         }
         return -1; // EOF
     }
-    LOGD("socket_wait: unknown state");
+    LOGE( "socket_wait: unknown state" );
     return -1;
 }
 
@@ -308,7 +304,6 @@ static void socket_cleanup(const char* sock_path) {
 void start_server ( char* sock_path, int sock_path_len, int peer_uid ) {
     int sock_serv, sock_client;
     sock_serv = socket_create( sock_path, sock_path_len );
-    LOGD( "start_server: %s", sock_path );
 
     if( sock_serv < 0 ) {
         LOGE( "start_server: sock_serv error" );
@@ -355,10 +350,10 @@ error:
 }
 
 void start_internal_server( void ) {
-    char sock_path[PATH_MAX];
+    char sock_path[UNIX_PATH_MAX];
 
     if( socket_internal_path( sock_path, sizeof( sock_path ) ) < 0 ) {
-        LOGE("socket_internal_path ERROR!");
+        LOGE( "socket_internal_path failed" );
         exit( EXIT_FAILURE );
     }
 
@@ -373,6 +368,7 @@ void start_internal_server( void ) {
             exit( EXIT_FAILURE );
         }
     }
+
     if( dir.st_uid != getuid() && chown( INTERNAL_GNUPGHOME, getuid(), dir.st_gid ) ) {
         LOGE("start_internal_server: chown(%d,%lu) failed on %s", getuid(), dir.st_gid, INTERNAL_GNUPGHOME );
         exit( EXIT_FAILURE );
@@ -393,32 +389,16 @@ void start_internal_server( void ) {
 }
 
 void start_external_server( int gpg_app_uid ) {
-    char sock_path[PATH_MAX];
-    char sock_dir_path[PATH_MAX];
+    char sock_path[UNIX_PATH_MAX];
 
-    if( socket_external_path( sock_path, sizeof( sock_path ), sock_dir_path, sizeof( sock_dir_path ) ) < 0 ) {
-        LOGE("socket_external_path ERROR!");
+    if( socket_external_path( &sock_path[1], sizeof( sock_path ) ) < 0 ) {
+        LOGE("socket_external_path failed");
         exit( EXIT_FAILURE );
     }
+    int len = strnlen( &sock_path[1], UNIX_PATH_MAX ) + 1;
+    sock_path[0] = '\0';
 
-    struct stat dir;
-    if ( stat(sock_dir_path, &dir) < 0 ) {
-        if( mkdir(sock_dir_path, 0660) < 0 ) {
-            LOGE("start_external_server: failed to mkdir(%s)", sock_dir_path);
-            exit( EXIT_FAILURE );
-        }
-        if ( stat(sock_dir_path, &dir) < 0 ) {
-            LOGE("start_external_server: mkdir'ed, but something wrong. aborting (path=%s)", sock_dir_path);
-            exit( EXIT_FAILURE );
-        }
-    }
-    if( ( ( dir.st_gid != gpg_app_uid ) || ( dir.st_uid != getuid() ) ) && chown( sock_dir_path, getuid(), gpg_app_uid ) ) {
-        LOGE("start_external_server: chown(%d,%d) failed on %s", getuid(), gpg_app_uid, sock_dir_path );
-        exit( EXIT_FAILURE );
-    }
-
-    LOGD("start_external_server socket: %s", sock_path);
-    start_server( sock_path, sizeof( sock_path ), gpg_app_uid );
+    start_server( sock_path, len, gpg_app_uid );
 }
 
 #if 0
@@ -601,8 +581,6 @@ int main ( int argc, char *argv[] ) {
         exit ( EXIT_FAILURE );
     }
 
-    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid() );
-
     /*
      * Launch the Android GUI component asyncronously
      */
@@ -626,7 +604,6 @@ int main ( int argc, char *argv[] ) {
      */
     if( gpg_stat.st_uid == getuid() ) {
         // internal pinentry
-        LOGD( "internal pinentry" );
         start_internal_server(); // never returns
         exit ( EXIT_FAILURE );
     } else {
