@@ -299,7 +299,13 @@ static void socket_cleanup(const char* sock_path) {
     }
 }
 
-void start_server ( char* sock_path, int sock_path_len ) {
+/*
+ * create a socket on sock_path and accept one client
+ * require that connected client have UID of peer_uid
+ * if authentication succeds, pass current process'
+ * stdin and stdout, then wait for client to tell us to quit.
+ */
+void start_server ( char* sock_path, int sock_path_len, int peer_uid ) {
     int sock_serv, sock_client;
     sock_serv = socket_create( sock_path, sock_path_len );
     LOGD( "start_server: %s", sock_path );
@@ -310,30 +316,45 @@ void start_server ( char* sock_path, int sock_path_len ) {
     }
 
     sock_client = socket_accept( sock_serv );
-
     if( sock_client < 0 ) {
         LOGE( "start_server: sock_client error" );
         goto error;
     }
 
-    if( socket_send_sdtio(sock_client) != 0 ) {
-        LOGE("sending stdio failed");
+    struct ucred credentials;
+    int ucred_length = sizeof( struct ucred );
+    if( getsockopt( sock_client, SOL_SOCKET, SO_PEERCRED, &credentials, &ucred_length ) ) {
+        LOGE( "start_server: couldn't obtain peer's credentials" );
+        goto error;
+    }
+
+    if( peer_uid != credentials.uid ) {
+        LOGE( "start_server: authentication error, expected uid %d, but found %d", peer_uid, credentials.uid );
+        goto error;
+    }
+
+    if( socket_send_sdtio( sock_client ) != 0 ) {
+        LOGE( "sending stdio failed" );
         goto error;
     }
 
     // gpg-agent and the real pinentry are now communicating
     // but our process must stay alive until they're finished
     // so we can exit with the actual return code
-    int rc = socket_wait(sock_client);
+    int rc = socket_wait( sock_client );
 
-    socket_cleanup(sock_path);
+    close( sock_client );
+    close( sock_serv );
+    socket_cleanup( sock_path );
     exit( rc );
 error:
-    socket_cleanup(sock_path);
+    close( sock_client );
+    close( sock_serv );
+    socket_cleanup( sock_path );
     exit( EXIT_FAILURE );
 }
 
-void start_internal_server() {
+void start_internal_server( void ) {
     char sock_path[PATH_MAX];
 
     if( socket_internal_path( sock_path, sizeof( sock_path ) ) < 0 ) {
@@ -368,7 +389,7 @@ void start_internal_server() {
     */
 
     LOGD("start_internal_server socket: %s", sock_path);
-    start_server( sock_path, sizeof( sock_path ) );
+    start_server( sock_path, sizeof( sock_path ), getuid() );
 }
 
 void start_external_server( int gpg_app_uid ) {
@@ -397,7 +418,7 @@ void start_external_server( int gpg_app_uid ) {
     }
 
     LOGD("start_external_server socket: %s", sock_path);
-    start_server( sock_path, sizeof( sock_path ) );
+    start_server( sock_path, sizeof( sock_path ), gpg_app_uid );
 }
 
 #if 0
