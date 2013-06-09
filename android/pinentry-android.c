@@ -384,7 +384,7 @@ void start_internal_server( void ) {
     LOGD("  %d %d %d", u, g, o);
     */
 
-    LOGD("start_internal_server socket: %s", sock_path);
+//     LOGD("start_internal_server socket: %s", sock_path);
     start_server( sock_path, sizeof( sock_path ), getuid() );
 }
 
@@ -535,7 +535,7 @@ static int run_command(char* command) {
         return 0;
     }
 
-    LOGD ( "run_command:  %s", command );
+//     LOGD ( "run_command:  %s", command );
     // quiet mode
     int devzero = open("/dev/zero", O_RDONLY | O_CLOEXEC);
     int devnull = open("/dev/null", O_WRONLY | O_CLOEXEC);
@@ -558,7 +558,7 @@ static int launch_pinentry_gui( int uid ) {
     unsigned int android_user_id = get_android_user_id();
 
     snprintf( command, sizeof( command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d --user %d", uid, android_user_id );
-    LOGD ( "sending intent with: %s", command );
+//     LOGD ( "sending intent with: %s", command );
     return run_command(command);
 }
 
