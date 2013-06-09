@@ -156,6 +156,21 @@ int recv_fd ( int sockfd ) {
     return -1;
 }
 
+static int socket_internal_path(char *path, size_t len) {
+    return snprintf(path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME);
+}
+
+static int socket_external_path(char *path, size_t len) {
+    struct passwd *pw;
+    int app_uid = getuid();
+    pw = getpwuid(app_uid);
+    if( !pw ) {
+        LOGE("unknown user for uid %d", app_uid);
+        return -1;
+    }
+    return snprintf( path, sizeof( path ), "%s/uid=%d(%s)/S.pinentry", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
+}
+
 static int socket_create(char *path, size_t len) {
     int fd;
     struct sockaddr_un sun;
@@ -172,7 +187,6 @@ static int socket_create(char *path, size_t len) {
 
     memset(&sun, 0, sizeof(sun));
     sun.sun_family = AF_LOCAL;
-    snprintf(path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME);
     memset(sun.sun_path, 0, sizeof(sun.sun_path));
     snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
 
@@ -283,21 +297,20 @@ static void socket_cleanup(const char* sock_path) {
     }
 }
 
-void start_internal_server ( void ) {
-    char sock_path[PATH_MAX];
+void start_server ( char* sock_path, int sock_path_len ) {
     int sock_serv, sock_client;
-    sock_serv = socket_create( sock_path, sizeof( sock_path ) );
-    LOGD( "start_internal_server: %s", sock_path );
+    sock_serv = socket_create( sock_path, sock_path_len );
+    LOGD( "start_server: %s", sock_path );
 
     if( sock_serv < 0 ) {
-        LOGE( "start_internal_server: sock_serv error" );
+        LOGE( "start_server: sock_serv error" );
         goto error;
     }
 
     sock_client = socket_accept( sock_serv );
 
     if( sock_client < 0 ) {
-        LOGE( "start_internal_server: sock_client error" );
+        LOGE( "start_server: sock_client error" );
         goto error;
     }
 
@@ -317,6 +330,29 @@ error:
     socket_cleanup(sock_path);
     exit( EXIT_FAILURE );
 }
+
+void start_internal_server() {
+    char sock_path[PATH_MAX];
+
+    if( socket_internal_path( sock_path, sizeof( sock_path ) ) < 0 ) {
+        LOGE("socket_internal_path ERROR!");
+        exit( EXIT_FAILURE );
+    }
+    LOGD("start_internal_server path: %s", sock_path);
+    start_server( sock_path, sizeof( sock_path ) );
+}
+
+void start_external_server() {
+    char sock_path[PATH_MAX];
+
+    if( socket_external_path( sock_path, sizeof( sock_path ) ) < 0 ) {
+        LOGE("socket_external_path ERROR!");
+        exit( EXIT_FAILURE );
+    }
+    LOGD("start_external_server path: %s", sock_path);
+    start_server( sock_path, sizeof( sock_path ) );
+}
+
 #if 0
 // We used to connect to connect to java over a domain socket
 // to launch the pinentry activity, but now we use the am command
@@ -413,21 +449,21 @@ void sanitize_env( void ) {
  * detect the user_id which is new in 4.2
  * as part of the multiuser mode feature
  * untested, but should work ;-)
- * 
+ *
  * -> someone want to send me a multiuser device?
- * 
+ *
  * Pre ICS, the android_user_id = 0
  * Post ICS, the formula is as follows
  *   M*100,000 + 10,000+N = linux_uid
  * where,
  *   N = app id, offset from 10,000
  *   M = android user id (human users), starting at 0
- * 
+ *
  * using integer division:
  *     android_user_id = linux_uid / 100000
  *              app_id = linux_uid % 100000
  *                 linux_uid = android_user_id * 100000 + (app_id % 100000)
- */ 
+ */
 static unsigned int get_android_user_id( void ) {
     unsigned int uid = getuid();
     unsigned int android_user_id = 0;
@@ -473,7 +509,7 @@ static int launch_pinentry_gui( int uid ) {
     char command[ARG_MAX];
     unsigned int android_user_id = get_android_user_id();
 
-    snprintf(command, sizeof(command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d --user %d", uid, android_user_id);
+    snprintf( command, sizeof( command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d --user %d", uid, android_user_id );
     LOGD ( "sending intent with: %s", command );
     return run_command(command);
 }
@@ -493,11 +529,11 @@ int main ( int argc, char *argv[] ) {
 
     // is gnupg even installed?
     if (stat(GPG_APP_PATH, &gpg_stat) < 0) {
-        LOGE("gpg not installed" GPG_APP_PATH);
+        LOGE( "gpg not installed" GPG_APP_PATH );
         exit ( EXIT_FAILURE );
     }
 
-    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid());
+    LOGD( "gpg_stat.st_uid(%lu) == getuid(%d)", gpg_stat.st_uid, getuid() );
 
     /*
      * Launch the Android GUI component asyncronously
@@ -507,18 +543,27 @@ int main ( int argc, char *argv[] ) {
         exit ( EXIT_FAILURE );
     }
 
+    /*
+     * Detect if this is an internal or external pinentry
+     *
+     * internal - gpg, gpg-agent processes, are from the same
+     *            application package as the pinentry Activity,
+     *            so the uid will be the same.
+     * external - gpg, gpg-agent, and pinentry process are different
+     *            than the gnupg-for-android app. this occurs when
+     *            an app uses the CLI tools we export.
+     *
+     * The distinction determines where the socket we use to communicate
+     * with the Java activity is place in the filesystem.
+     */
     if( gpg_stat.st_uid == getuid() ) {
         // internal pinentry
-        // this pinentry process has been invoked
-        // by the gnupg-for-android app
         LOGD( "internal pinentry" );
         start_internal_server(); // never returns
         exit ( EXIT_FAILURE );
     } else {
-        // TODO external pinentry
-        // some other application wants to access pinentry
-        // NYI
-        LOGE( "NYI - external pinentry request from app %d", getuid() );
+        // external pinentry
+        start_external_server();
         exit ( EXIT_FAILURE );
     }
     return -1;
