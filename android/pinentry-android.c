@@ -160,7 +160,7 @@ static int socket_internal_path(char *path, size_t len) {
     return snprintf(path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME);
 }
 
-static int socket_external_path(char *path, size_t len) {
+static int socket_external_path(char *path, size_t len, char *dir_path, size_t dir_len) {
     struct passwd *pw;
     int app_uid = getuid();
     pw = getpwuid(app_uid);
@@ -168,7 +168,9 @@ static int socket_external_path(char *path, size_t len) {
         LOGE("unknown user for uid %d", app_uid);
         return -1;
     }
-    return snprintf( path, sizeof( path ), "%s/uid=%d(%s)/S.pinentry", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
+    snprintf( dir_path, sizeof( dir_len ), "%s/uid=%d(%s)", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
+    snprintf( path, sizeof( path ), "%s/uid=%d(%s)/S.pinentry", EXTERNAL_GNUPGHOME, app_uid, pw->pw_name );
+    return 0;
 }
 
 static int socket_create(char *path, size_t len) {
@@ -338,18 +340,63 @@ void start_internal_server() {
         LOGE("socket_internal_path ERROR!");
         exit( EXIT_FAILURE );
     }
-    LOGD("start_internal_server path: %s", sock_path);
+
+    struct stat dir;
+    if ( stat(INTERNAL_GNUPGHOME, &dir) < 0 ) {
+        if( mkdir(INTERNAL_GNUPGHOME, 0600) < 0 ) {
+            LOGE("start_internal_server: failed to mkdir(%s)", INTERNAL_GNUPGHOME);
+            exit( EXIT_FAILURE );
+        }
+        if ( stat(INTERNAL_GNUPGHOME, &dir) < 0 ) {
+            LOGE("start_internal_server: mkdir'ed, but something wrong. aborting (path=%s)", INTERNAL_GNUPGHOME);
+            exit( EXIT_FAILURE );
+        }
+    }
+    if( dir.st_uid != getuid() && chown( INTERNAL_GNUPGHOME, getuid(), dir.st_gid ) ) {
+        LOGE("start_internal_server: chown(%d,%lu) failed on %s", getuid(), dir.st_gid, INTERNAL_GNUPGHOME );
+        exit( EXIT_FAILURE );
+    }
+
+    /*
+    stat(INTERNAL_GNUPGHOME, &dir);
+    LOGD("%s: u=%d g=%d", INTERNAL_GNUPGHOME, dir.st_uid, dir.st_gid);
+    int u,g,o;
+    u = (dir.st_mode & S_IRWXU) >> 6;
+    g = (dir.st_mode & S_IRWXG) >> 6;
+    o = (dir.st_mode & S_IRWXO) >> 6;
+    LOGD("  %d %d %d", u, g, o);
+    */
+
+    LOGD("start_internal_server socket: %s", sock_path);
     start_server( sock_path, sizeof( sock_path ) );
 }
 
-void start_external_server() {
+void start_external_server( int gpg_app_uid ) {
     char sock_path[PATH_MAX];
+    char sock_dir_path[PATH_MAX];
 
-    if( socket_external_path( sock_path, sizeof( sock_path ) ) < 0 ) {
+    if( socket_external_path( sock_path, sizeof( sock_path ), sock_dir_path, sizeof( sock_dir_path ) ) < 0 ) {
         LOGE("socket_external_path ERROR!");
         exit( EXIT_FAILURE );
     }
-    LOGD("start_external_server path: %s", sock_path);
+
+    struct stat dir;
+    if ( stat(sock_dir_path, &dir) < 0 ) {
+        if( mkdir(sock_dir_path, 0660) < 0 ) {
+            LOGE("start_external_server: failed to mkdir(%s)", sock_dir_path);
+            exit( EXIT_FAILURE );
+        }
+        if ( stat(sock_dir_path, &dir) < 0 ) {
+            LOGE("start_external_server: mkdir'ed, but something wrong. aborting (path=%s)", sock_dir_path);
+            exit( EXIT_FAILURE );
+        }
+    }
+    if( ( ( dir.st_gid != gpg_app_uid ) || ( dir.st_uid != getuid() ) ) && chown( sock_dir_path, getuid(), gpg_app_uid ) ) {
+        LOGE("start_external_server: chown(%d,%d) failed on %s", getuid(), gpg_app_uid, sock_dir_path );
+        exit( EXIT_FAILURE );
+    }
+
+    LOGD("start_external_server socket: %s", sock_path);
     start_server( sock_path, sizeof( sock_path ) );
 }
 
@@ -563,7 +610,7 @@ int main ( int argc, char *argv[] ) {
         exit ( EXIT_FAILURE );
     } else {
         // external pinentry
-        start_external_server();
+        start_external_server( gpg_stat.st_uid );
         exit ( EXIT_FAILURE );
     }
     return -1;
