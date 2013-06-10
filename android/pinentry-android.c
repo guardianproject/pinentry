@@ -49,9 +49,6 @@
 
 #define GPG_APP_PATH "/data/data/info.guardianproject.gpg"
 
-#define INTERNAL_GNUPGHOME GPG_APP_PATH "/app_home"
-#define EXTERNAL_GNUPGHOME GPG_APP_PATH "/app_gnupghome"
-
 #define ACTION_PINENTRY "start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
 
 #define SOCKET_PINENTRY "info.guardianproject.gpg.pinentry"
@@ -156,7 +153,7 @@ int recv_fd ( int sockfd ) {
 }
 
 static int socket_internal_path( char *path, size_t len ) {
-    snprintf( path, len, "%s/S.pinentry", INTERNAL_GNUPGHOME );
+    snprintf( path, len, "%s/S.pinentry", getenv("GNUPGHOME") );
     return 0;
 }
 
@@ -358,33 +355,11 @@ void start_internal_server( void ) {
     }
 
     struct stat dir;
-    if ( stat(INTERNAL_GNUPGHOME, &dir) < 0 ) {
-        if( mkdir(INTERNAL_GNUPGHOME, 0600) < 0 ) {
-            LOGE("start_internal_server: failed to mkdir(%s)", INTERNAL_GNUPGHOME);
-            exit( EXIT_FAILURE );
-        }
-        if ( stat(INTERNAL_GNUPGHOME, &dir) < 0 ) {
-            LOGE("start_internal_server: mkdir'ed, but something wrong. aborting (path=%s)", INTERNAL_GNUPGHOME);
-            exit( EXIT_FAILURE );
-        }
-    }
-
-    if( dir.st_uid != getuid() && chown( INTERNAL_GNUPGHOME, getuid(), dir.st_gid ) ) {
-        LOGE("start_internal_server: chown(%d,%lu) failed on %s", getuid(), dir.st_gid, INTERNAL_GNUPGHOME );
+    if ( stat(getenv("GNUPGHOME"), &dir) < 0 ) {
+        LOGE("start_internal_server: GNUPGHOME doesn't exist (GNUPHOME=%s)", getenv("GNUPGHOME"));
         exit( EXIT_FAILURE );
     }
 
-    /*
-    stat(INTERNAL_GNUPGHOME, &dir);
-    LOGD("%s: u=%d g=%d", INTERNAL_GNUPGHOME, dir.st_uid, dir.st_gid);
-    int u,g,o;
-    u = (dir.st_mode & S_IRWXU) >> 6;
-    g = (dir.st_mode & S_IRWXG) >> 6;
-    o = (dir.st_mode & S_IRWXO) >> 6;
-    LOGD("  %d %d %d", u, g, o);
-    */
-
-//     LOGD("start_internal_server socket: %s", sock_path);
     start_server( sock_path, sizeof( sock_path ), getuid() );
 }
 
