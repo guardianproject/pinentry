@@ -376,59 +376,6 @@ void start_external_server( int gpg_app_uid ) {
     start_server( sock_path, len, gpg_app_uid );
 }
 
-#if 0
-// We used to connect to connect to java over a domain socket
-// to launch the pinentry activity, but now we use the am command
-// this method might need to be ressurected in the future
-
-int notify_helper ( void ) {
-
-    struct sockaddr_un addr;
-    int fd, addr_len;
-    char cmd[] = "START\n";
-    char buf[1];
-
-    if ( ( fd = socket ( AF_UNIX, SOCK_STREAM, 0 ) ) == -1 ) {
-        perror ( "socket error" );
-        exit ( -1 );
-    }
-
-    memset ( &addr, 0, sizeof ( addr ) );
-    addr.sun_family = AF_UNIX;
-    addr.sun_path[0] = '\0';
-    strncpy ( &addr.sun_path[1], SOCKET_HELPER, sizeof ( addr.sun_path )-1 );
-
-    addr_len = offsetof ( struct sockaddr_un, sun_path ) + 1 + strlen ( &addr.sun_path[1] );
-    LOGD ( "connecting to Java socket server...\n" );
-    if ( connect ( fd, ( struct sockaddr* ) &addr, addr_len ) < 0 ) {
-        perror ( "connect error" );
-        exit ( EXIT_FAILURE );
-    }
-
-    LOGD ( "connected, launching activity\n" );
-
-    if ( write ( fd, cmd, strlen ( cmd ) ) != strlen(cmd) ) {
-        perror ( "sending start failed:" );
-    }
-
-    LOGD ( "sent start command, waiting response\n" );
-
-    if ( read ( fd, buf, 1 ) != 1 ) {
-        LOGD ( "reading response from server failed\n" );
-        perror ( "server resp:" );
-        exit ( EXIT_FAILURE );
-    }
-    if ( buf[1] == -1 ) {
-        LOGD ( "launching activity failed\n" );
-        exit ( EXIT_FAILURE );
-    }
-
-    LOGD ( "pinentry activity launched\n" );
-
-    return fd;
-}
-#endif
-
 void sanitize_env( void ) {
     static const char* const unsec_vars[] = {
         "GCONV_PATH",
