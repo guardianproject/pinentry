@@ -171,7 +171,7 @@ static int socket_accept( int sock ) {
         rc = select( sock + 1, &fds, NULL, NULL, &tv );
     } while ( rc < 0 && errno == EINTR );
     if ( rc < 1 ) {
-        LOGE( "select" );
+        LOGE( "select timed out" );
         return -1;
     }
 
@@ -257,7 +257,7 @@ void start_server ( char* sock_path, int sock_path_len, int peer_uid ) {
 
     sock_client = socket_accept( sock_serv );
     if( sock_client < 0 ) {
-        LOGE( "start_server: sock_client error" );
+        LOGE( "start_server: sock_client error, sock=%s",sock_path );
         goto error;
     }
 
@@ -360,7 +360,7 @@ void sanitize_env( void ) {
         cp++;
     }
     setenv("LD_LIBRARY_PATH", "/vendor/lib:/system/vendor/lib:/system/lib", 0);
-    setenv("BOOTCLASSPATH", "/system/framework/core.jar:/system/framework/core-junit.jar:/system/framework/bouncycastle.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/mms-common.jar:/system/framework/android.policy.jar:/system/framework/services.jar:/system/framework/apache-xml.jar", 1);
+    setenv("BOOTCLASSPATH", "/system/framework/core.jar:/system/framework/core-junit.jar:/system/framework/bouncycastle.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/mms-common.jar:/system/framework/android.policy.jar:/system/framework/services.jar:/system/framework/apache-xml.jar", 0);
 }
 
 /*
