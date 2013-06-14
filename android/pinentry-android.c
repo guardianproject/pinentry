@@ -359,8 +359,32 @@ void sanitize_env( void ) {
         unsetenv(*cp);
         cp++;
     }
-    setenv("LD_LIBRARY_PATH", "/vendor/lib:/system/vendor/lib:/system/lib", 0);
-    setenv("BOOTCLASSPATH", "/system/framework/core.jar:/system/framework/core-junit.jar:/system/framework/bouncycastle.jar:/system/framework/ext.jar:/system/framework/framework.jar:/system/framework/telephony-common.jar:/system/framework/mms-common.jar:/system/framework/android.policy.jar:/system/framework/services.jar:/system/framework/apache-xml.jar", 0);
+
+    const char* pe_data = getenv("PINENTRY_USER_DATA");
+    if( pe_data == 0 ) {
+        LOGE("pinentry-android helper missing PINENTRY_USER_DATA env var. Aborting.");
+        exit( EXIT_FAILURE );
+    }
+    char* start = pe_data;
+    char* end;
+    int count = 0;
+    while( ( end = strchr( start, ';' ) ) != 0) {
+        char var[end-start+1];
+        memcpy(var, start, (end-start));
+        var[end-start] = '\0';
+        switch(count++) {
+            case 0:
+                setenv("LD_LIBRARY_PATH", var, 0);
+                break;
+            case 1:
+                setenv("BOOTCLASSPATH", var, 0);
+                break;
+            case 2:
+                setenv("ANDROID_USER_ID", var, 1);
+                break;
+        }
+        start = end + 1;
+    }
 }
 
 /*
@@ -382,13 +406,8 @@ void sanitize_env( void ) {
  *              app_id = linux_uid % 100000
  *                 linux_uid = android_user_id * 100000 + (app_id % 100000)
  */
-static unsigned int get_android_user_id( void ) {
-    unsigned int uid = getuid();
-    unsigned int android_user_id = 0;
-    if( uid > 99999 ) {
-        android_user_id = uid / 100000;
-    }
-    return android_user_id;
+static int get_android_user_id( void ) {
+    return atoi(getenv("ANDROID_USER_ID"));
 }
 
 /*
@@ -425,10 +444,18 @@ static int run_command(char* command) {
  */
 static int launch_pinentry_gui( int uid ) {
     char command[ARG_MAX];
-    unsigned int android_user_id = get_android_user_id();
+    int android_user_id = get_android_user_id();
 
-    snprintf( command, sizeof( command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d --user %d", uid, android_user_id );
-//     LOGD ( "sending intent with: %s", command );
+    char user[10];
+    if( android_user_id >= 0 ) {
+        snprintf(user, 10, "--user %d", android_user_id);
+    } else {
+        snprintf(user, 1, "");
+    }
+
+
+    snprintf( command, sizeof( command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d %s", uid, user );
+    LOGD ( "sending intent with: %s", command );
     return run_command(command);
 }
 
