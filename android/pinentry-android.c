@@ -47,11 +47,12 @@
 #include "pinentry.h"
 #include "pinentry-curses.h"
 
-#define GPG_APP_PATH "/data/data/info.guardianproject.gpg"
+#define PACKAGE_NAME "info.guardianproject.gpg"
+#define GPG_APP_PATH "/data/data/"PACKAGE_NAME
 
-#define ACTION_PINENTRY "start -n info.guardianproject.gpg/info.guardianproject.gpg.pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
+#define ACTION_PINENTRY "start -n "PACKAGE_NAME"/"PACKAGE_NAME".pinentry.PinEntryActivity --activity-no-history --activity-clear-top"
 
-#define SOCKET_PINENTRY "info.guardianproject.gpg.pinentry"
+#define SOCKET_PINENTRY PACKAGE_NAME".pinentry"
 
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PE-HELPER", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR , "PE-HELPER", __VA_ARGS__)
@@ -359,31 +360,26 @@ void sanitize_env( void ) {
         unsetenv(*cp);
         cp++;
     }
+}
 
-    const char* pe_data = getenv("PINENTRY_USER_DATA");
-    if( pe_data == 0 ) {
-        LOGE("pinentry-android helper missing PINENTRY_USER_DATA env var. Aborting.");
-        exit( EXIT_FAILURE );
-    }
-    char* start = pe_data;
-    char* end;
-    int count = 0;
-    while( ( end = strchr( start, ';' ) ) != 0) {
-        char var[end-start+1];
-        memcpy(var, start, (end-start));
-        var[end-start] = '\0';
-        switch(count++) {
-            case 0:
-                setenv("LD_LIBRARY_PATH", var, 0);
-                break;
-            case 1:
-                setenv("BOOTCLASSPATH", var, 0);
-                break;
-            case 2:
-                setenv("ANDROID_USER_ID", var, 1);
-                break;
+void setup_env( void ) {
+    const char* pinentry_conf = GPG_APP_PATH"/app_opt/etc/environment.conf";
+    struct stat pinentry_conf_stat;
+    if (stat(pinentry_conf, &pinentry_conf_stat) < 0)
+        LOGE( "%s not found!", pinentry_conf );
+    else {
+        char* equals;
+        char line[ARG_MAX];
+        FILE* f = fopen(pinentry_conf, "r");
+        while(fgets(line, ARG_MAX, f) != NULL) {
+            char varname[ARG_MAX] = "";
+            char data[ARG_MAX] = "";
+            equals = strchr(line, '=');
+            strncpy(varname, line, equals - line);
+            strncpy(data, equals + 1, strlen(line) - (equals - line) - 2);
+            setenv(varname, data, 1);
         }
-        start = end + 1;
+        fclose(f);
     }
 }
 
@@ -462,6 +458,7 @@ static int launch_pinentry_gui( int uid ) {
 int main ( int argc, char *argv[] ) {
 
     sanitize_env();
+    setup_env();
     struct stat gpg_stat;
 
     /* Consumes all arguments.  */
