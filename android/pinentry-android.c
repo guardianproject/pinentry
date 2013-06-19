@@ -450,7 +450,7 @@ static int launch_pinentry_gui( int uid ) {
     if( android_user_id >= 0 ) {
         snprintf(user, 10, "--user %d", android_user_id);
     } else {
-        snprintf(user, 1, "");
+        strncpy(user, "", 1);
     }
 
 
