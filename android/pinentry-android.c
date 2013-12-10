@@ -54,8 +54,8 @@
 
 #define SOCKET_PINENTRY PACKAGE_NAME".pinentry"
 
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "PE-HELPER", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR , "PE-HELPER", __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG , "pinentry-android.c", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR , "pinentry-android.c", __VA_ARGS__)
 
 /* dummy cmd_handler to prevent linking errors */
 static int
@@ -308,7 +308,7 @@ void start_internal_server( void ) {
         LOGE("start_internal_server: GNUPGHOME doesn't exist (GNUPHOME=%s)", getenv("GNUPGHOME"));
         exit( EXIT_FAILURE );
     }
-
+    LOGD("start_server %s", sock_path);
     start_server( sock_path, sizeof( sock_path ), getuid() );
 }
 
@@ -369,15 +369,22 @@ void setup_env( void ) {
         LOGE( "%s not found!", pinentry_conf );
     else {
         char* equals;
+        char* dash;
         char line[ARG_MAX];
         FILE* f = fopen(pinentry_conf, "r");
         while(fgets(line, ARG_MAX, f) != NULL) {
             char varname[ARG_MAX] = "";
             char data[ARG_MAX] = "";
             equals = strchr(line, '=');
+            dash = strchr(line, '-');
             strncpy(varname, line, equals - line);
-            strncpy(data, equals + 1, strlen(line) - (equals - line) - 2);
-            setenv(varname, data, 1);
+            if (dash) {
+                strncpy(data, dash + 1, strlen(dash) - 3);
+                setenv(varname, data, 0); // :- means don't overwrite if present
+            } else {
+                strncpy(data, equals + 1, strlen(line) - (equals - line) - 2);
+                setenv(varname, data, 1);
+            }
         }
         fclose(f);
     }
@@ -439,6 +446,7 @@ static int run_command(char* command) {
  * The activity is not guaranteed to have been started.
  */
 static int launch_pinentry_gui( int uid ) {
+    LOGD("launch_pinentry_gui %i", uid);
     char command[ARG_MAX];
     int android_user_id = get_android_user_id();
 
@@ -449,16 +457,23 @@ static int launch_pinentry_gui( int uid ) {
         strncpy(user, "", 1);
     }
 
-
     snprintf( command, sizeof( command), "exec /system/bin/am " ACTION_PINENTRY " --ei uid %d %s", uid, user );
     LOGD ( "sending intent with: %s", command );
     return run_command(command);
 }
 
+extern char **environ;
+
 int main ( int argc, char *argv[] ) {
 
     sanitize_env();
     setup_env();
+    int i = 0;
+    LOGD ( "pinentry-android's environment:\n" );
+    while(environ[i])
+        LOGD("%s\n", environ[i++]);
+
+
     struct stat gpg_stat;
 
     /* Consumes all arguments.  */
